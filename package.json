@@ -1,0 +1,23 @@
+{
+  "name": "delivery-dates-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for updating delivery dates in Supabase",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "supabase",
+    "delivery"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "@supabase/supabase-js": "^2.28.0",
+    "dotenv": "^16.3.1"
+  }
+}
