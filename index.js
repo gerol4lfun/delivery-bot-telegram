@@ -1,11 +1,26 @@
 /**
  * Telegram бот для обновления дат доставки в Supabase
+ * 
+ * 📍 Проект на Railway: Telegram Bot - Delivery Dates
+ * 🔗 Репозиторий: delivery-bot-telegram
  */
 
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { parseDeliveryDates, formatParsedResults } = require('./parser');
 const { initSupabase, updateDeliveryDates } = require('./supabase');
+
+// Версионирование для отладки
+const APP_VERSION = process.env.APP_VERSION || "v186-bot";
+const BUILD_SHA =
+    process.env.RAILWAY_GIT_COMMIT_SHA ||
+    process.env.GITHUB_SHA ||
+    process.env.SOURCE_VERSION ||
+    "unknown";
+
+console.log(
+    `[BOOT] app=${APP_VERSION} sha=${BUILD_SHA} node=${process.version} cwd=${process.cwd()} file=${__filename}`
+);
 
 // Проверка переменных окружения
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -37,6 +52,14 @@ try {
 
 console.log('🤖 Бот запущен и готов к работе!');
 
+// Команда /version
+bot.onText(/\/version/i, (msg) => {
+    bot.sendMessage(
+        msg.chat.id,
+        `app=${APP_VERSION}\nsha=${BUILD_SHA}\nnode=${process.version}`
+    );
+});
+
 // Команда /start
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
@@ -51,9 +74,9 @@ bot.onText(/\/start/, (msg) => {
 Питер с 8.02
 Воронеж с 12.02</i>
 
-Или с исключениями:
-<i>Москва с 9.02 (кроме 16)
-Тула с 9.02 (кроме 16, 20)</i>
+Или с исключениями (два формата):
+<i>Москва с 12.02, кроме 13.02, 14.02
+Тула с 12.02 (кроме 13.02, 14.02)</i>
 
 Бот автоматически:
 1️⃣ Распарсит данные
@@ -81,13 +104,15 @@ bot.onText(/\/help/, (msg) => {
 Примеры:
 • Москва с 9.02
 • Санкт-Петербург с 8.02
-• Воронеж с 12.02 (кроме 16)
-• Тула с 9.02 (кроме 16, 20, 25)
+• Москва с 12.02, кроме 13.02, 14.02
+• Тула с 12.02 (кроме 13.02, 14.02)
 
 <b>Важно:</b>
 • Каждый город на новой строке
 • Дата в формате ДД.ММ (например: 9.02, 12.02)
-• Исключения указываются в скобках: (кроме 16)
+• Исключения можно указывать двумя способами:
+  - С запятой: "Москва с 12.02, кроме 13.02, 14.02"
+  - Со скобками: "Москва с 12.02 (кроме 13.02, 14.02)"
     `;
 
     bot.sendMessage(chatId, helpMessage, { parse_mode: 'HTML' });
@@ -96,7 +121,8 @@ bot.onText(/\/help/, (msg) => {
 // Обработка текстовых сообщений
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const text = msg.text;
+    // Обрабатываем как msg.text, так и msg.caption (если текст прикреплен к файлу/картинке)
+    const text = msg.text || msg.caption || "";
 
     // Пропускаем команды
     if (text && text.startsWith('/')) {
@@ -119,7 +145,23 @@ bot.on('message', async (msg) => {
         // Парсим текст
         bot.sendMessage(chatId, '⏳ Обрабатываю данные...');
 
+        // Логируем входящий текст для отладки
+        console.log('📥 Входящий текст (первые 200 символов):', text.substring(0, 200));
+        console.log('📥 Длина текста:', text.length);
+        console.log('📥 Количество строк:', text.split('\n').length);
+        console.log('📥 Первые 3 строки:');
+        text.split('\n').slice(0, 3).forEach((line, idx) => {
+            console.log(`  ${idx + 1}. "${line}" (длина: ${line.length})`);
+        });
+
         const parsedData = parseDeliveryDates(text);
+        
+        // Логируем результаты парсинга
+        console.log('📊 Найдено записей:', parsedData.length);
+        console.log('📊 С ограничениями:', parsedData.filter(r => r.restrictions).length);
+        parsedData.forEach((item, index) => {
+            console.log(`  ${index + 1}. ${item.city} - ${item.date}${item.restrictions ? ' (кроме ' + item.restrictions + ')' : ''}`);
+        });
 
         if (parsedData.length === 0) {
             bot.sendMessage(chatId, '❌ Не найдено ни одной записи в правильном формате.\n\nИспользуйте формат: "Город с ДД.ММ"\n\nПример: Москва с 9.02');
