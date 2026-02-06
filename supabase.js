@@ -42,6 +42,8 @@ async function updateDeliveryDates(deliveryData) {
 
     for (const item of deliveryData) {
         try {
+            console.log(`💾 Обновление: ${item.city} - ${item.date}${item.restrictions ? ' (кроме ' + item.restrictions + ')' : ''}`);
+            
             // Проверяем, существует ли город
             const { data: existing, error: checkError } = await supabaseClient
                 .from('delivery_dates')
@@ -53,24 +55,48 @@ async function updateDeliveryDates(deliveryData) {
                 throw checkError;
             }
 
+            // ВАЖНО: Если restrictions не указаны, устанавливаем null (чтобы очистить старые ограничения)
+            // Проверяем, что restrictions есть и не пустые (после trim)
+            let restrictionsValue = null;
+            if (item.restrictions !== null && item.restrictions !== undefined) {
+                const trimmed = String(item.restrictions).trim();
+                if (trimmed !== '') {
+                    restrictionsValue = trimmed;
+                }
+            }
+            // Если restrictions пустые или отсутствуют, устанавливаем null для очистки старых значений
+            
             const updateData = {
                 delivery_date: item.date,
-                updated_at: new Date().toISOString()
+                updated_at: new Date().toISOString(),
+                restrictions: restrictionsValue  // Явно устанавливаем null если нет ограничений
             };
-
-            if (item.restrictions !== null) {
-                updateData.restrictions = item.restrictions;
-            }
+            
+            console.log(`  📝 Данные для обновления:`, JSON.stringify(updateData));
+            console.log(`  🔍 Restrictions значение:`, restrictionsValue === null ? 'NULL (будет очищено)' : restrictionsValue);
 
             if (existing) {
                 // Обновляем существующую запись
+                // ВАЖНО: Явно указываем все поля, включая restrictions = null для очистки
                 const { error: updateError } = await supabaseClient
                     .from('delivery_dates')
                     .update(updateData)
                     .eq('city_name', item.city);
 
                 if (updateError) {
+                    console.error(`  ❌ Ошибка обновления для ${item.city}:`, updateError);
                     throw updateError;
+                }
+                
+                // Проверяем результат обновления
+                const { data: checkData, error: checkError } = await supabaseClient
+                    .from('delivery_dates')
+                    .select('restrictions')
+                    .eq('city_name', item.city)
+                    .single();
+                
+                if (!checkError && checkData) {
+                    console.log(`  ✅ Обновлено: ${item.city} - restrictions = ${checkData.restrictions === null ? 'NULL (очищено)' : checkData.restrictions}`);
                 }
 
                 results.success.push({
