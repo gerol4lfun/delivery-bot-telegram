@@ -1,6 +1,9 @@
 /**
  * Парсер текста для извлечения городов и дат доставки
+ * Город = первое слово до "доставки"/"сборки", сопоставляется с фиксированным списком
  */
+
+const { toCanonicalCity, isKnownCity } = require('./cities');
 
 /**
  * Нормализует дату в формате ДД.ММ (добавляет ведущие нули)
@@ -17,10 +20,25 @@ function normalizeDM(dm) {
 }
 
 /**
- * Парсит одну строку: "Город с ДД.ММ[, кроме ДД.ММ, ДД.ММ]"
- * Двухшаговый разбор без якоря $ для устойчивости к "Telegram-магии"
+ * Извлекает название города — первое слово до "доставки"/"сборки"
+ * "Краснодар доставки" → "Краснодар", "Майкоп доставки" → "Майкоп"
+ * "Великий Новгород" → "Великий Новгород" (без изменений)
+ * @param {string} city - Исходное название
+ * @returns {string} Очищенное название
+ */
+function cleanCityName(city) {
+    if (!city) return city;
+    // \b не надёжен с кириллицей в JS — используем границу без \b
+    const cleaned = city.split(/\s+(?:доставки|сборки)(?=\s|$)/i)[0];
+    return (cleaned || city).trim();
+}
+
+/**
+ * Парсит одну строку:
+ * - "Город с ДД.ММ" — простая форма
+ * - "Город доставки с ДД.ММ, сборки с ДД.ММ (кроме ДД.ММ, ДД.ММ)" — форма с разными датами
  * @param {string} line - Строка для парсинга
- * @returns {Object|null} Объект {city_name, delivery_date, restrictions} или null
+ * @returns {Object|null} Объект {city_name, delivery_date, assembly_date, restrictions} или null
  */
 function parseDeliveryLine(line) {
     const raw = line;
@@ -29,18 +47,25 @@ function parseDeliveryLine(line) {
 
     if (!s) return null;
 
-    // 1) сначала достаём: ГОРОД + стартовую дату (без привязки к концу строки)
+    // 1) Ищем основную форму: ГОРОД + "с/со" + дата
     const head = s.match(/^(.+?)\s+(?:с|со)\s+(\d{1,2}[.]\d{1,2})\b/i);
     if (!head) {
         console.log(`  ❌ Не распознана: "${raw}" -> "${s}"`);
         return null;
     }
 
-    const city = head[1].trim();
-    const startDate = head[2].trim();
-    const delivery_date = normalizeDM(startDate);
+    const cityRaw = head[1].trim();
+    const city = cleanCityName(cityRaw);
+    const delivery_date = normalizeDM(head[2].trim());
 
-    // 2) затем отдельно ищем блок "кроме ..."
+    // 2) Ищем дату сборки: "сборки с ДД.ММ" или ", сборки с ДД.ММ"
+    let assembly_date = null;
+    const assemblyMatch = s.match(/сборки\s+(?:с|со)\s+(\d{1,2}[.]\d{1,2})\b/i);
+    if (assemblyMatch) {
+        assembly_date = normalizeDM(assemblyMatch[1].trim());
+    }
+
+    // 3) Ищем блок "кроме ..."
     let restrictions = null;
     const lower = s.toLowerCase();
     const idx = lower.indexOf("кроме");
@@ -50,7 +75,6 @@ function parseDeliveryLine(line) {
             .replace(/^[\s:,-]+/, "")
             .trim();
 
-        // нормализуем список дат: "13.02, 14.02" / "13.02 и 14.02"
         if (restrictions) {
             if (restrictions.toLowerCase().includes('дату доставки нет') || 
                 restrictions.toLowerCase().includes('доставки нет')) {
@@ -63,24 +87,26 @@ function parseDeliveryLine(line) {
                     .replace(/^,|,$/g, "")
                     .trim();
                 
-                // Разбиваем на даты и нормализуем каждую
                 restrictions = restrictions
+                    .replace(/[()]+/g, '')
                     .split(',')
-                    .map(s => s.trim())
+                    .map(s => s.trim().replace(/[()]/g, ''))
                     .filter(Boolean)
                     .map(normalizeDM)
-                    .join(', '); // ✅ "13.02, 14.02"
+                    .join(', ');
             }
         }
-        
-        console.log(`  ✅ Найдено с ограничениями: ${city} - ${delivery_date}, кроме ${restrictions}`);
-    } else {
-        console.log(`  ✅ Найдено без ограничений: ${city} - ${delivery_date}`);
     }
+
+    const logParts = [city, delivery_date];
+    if (assembly_date) logParts.push(`сборка ${assembly_date}`);
+    if (restrictions) logParts.push(`кроме ${restrictions}`);
+    console.log(`  ✅ Распознано: ${logParts.join(' | ')}`);
 
     return { 
         city_name: city, 
         delivery_date: delivery_date, 
+        assembly_date: assembly_date,
         restrictions: restrictions 
     };
 }
@@ -113,7 +139,7 @@ function normalizeText(text) {
 function stripLineJunk(line) {
     return line
         .trim()
-        // убираем маркеры списков в начале: "•", "-", "—", "1)", "1.", "*", "✅" и т.п.
+        .replace(/\|+$/, '') // убираем trailing pipe при копипасте
         .replace(/^[\s>*•·\-–—✅☑️✔️\d\)\.]+/u, "")
         .trim();
 }
@@ -167,51 +193,16 @@ function parseDeliveryDates(text) {
     
     console.log(`✅ Успешно распознано: ${results.length} из ${lines.length} строк`);
     
-    // Преобразуем в формат, который ожидает остальной код
     return results.map(item => {
-        const normalizedCity = normalizeCityName(item.city_name);
+        const cleanedCity = cleanCityName(item.city_name);
+        const city = toCanonicalCity(cleanedCity);
         return {
-            city: normalizedCity,
-            originalCity: item.city_name,
+            city,
             date: item.delivery_date,
+            assembly_date: item.assembly_date || null,
             restrictions: item.restrictions
         };
-    });
-}
-
-/**
- * Нормализует название города (приводит к стандартному виду)
- */
-function normalizeCityName(city) {
-    const cityMap = {
-        'питер': 'Санкт-Петербург',
-        'петербург': 'Санкт-Петербург',
-        'спб': 'Санкт-Петербург',
-        'нн': 'Нижний Новгород',
-        'нижний': 'Нижний Новгород',
-        'челны': 'Набережные Челны',
-        'набережные челны': 'Набережные Челны',
-        'йошкар-ола': 'Йошкар-Ола',
-        'орёл': 'Орёл',
-        'орёл': 'Орёл'
-    };
-
-    const lowerCity = city.toLowerCase().trim();
-    
-    // Проверяем точное совпадение
-    if (cityMap[lowerCity]) {
-        return cityMap[lowerCity];
-    }
-
-    // Проверяем частичное совпадение
-    for (const [key, value] of Object.entries(cityMap)) {
-        if (lowerCity.includes(key) || key.includes(lowerCity)) {
-            return value;
-        }
-    }
-
-    // Если не найдено, возвращаем с заглавной буквы
-    return city.charAt(0).toUpperCase() + city.slice(1).toLowerCase();
+    }).filter(item => isKnownCity(item.city));
 }
 
 /**
@@ -226,6 +217,9 @@ function formatParsedResults(results) {
     
     results.forEach((item, index) => {
         message += `${index + 1}. ${item.city} - ${item.date}`;
+        if (item.assembly_date && item.assembly_date !== item.date) {
+            message += `, сборка с ${item.assembly_date}`;
+        }
         if (item.restrictions) {
             message += ` (кроме ${item.restrictions})`;
         }
@@ -237,6 +231,5 @@ function formatParsedResults(results) {
 
 module.exports = {
     parseDeliveryDates,
-    normalizeCityName,
     formatParsedResults
 };
