@@ -10,6 +10,49 @@ const { createClient } = require('@supabase/supabase-js');
 
 let supabaseClient = null;
 
+/**
+ * Нормализация названий для надежного сопоставления:
+ * - убираем невидимые/неразрывные пробелы
+ * - приводим "ё" к "е"
+ * - сжимаем множественные пробелы
+ */
+function normalizeCityKey(value) {
+    if (!value) return '';
+    return String(value)
+        .normalize('NFKC')
+        .replace(/\u00A0|\u2009|\u2006|\u2007|\u202F/g, ' ')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase()
+        .replace(/ё/g, 'е');
+}
+
+function getCanonicalAliases(canonicalCity) {
+    const aliasMap = {
+        'санкт-петербург': ['питер', 'петербург', 'спб'],
+        'нижний новгород': ['нн', 'нижний'],
+        'набережные челны': ['челны'],
+        'великий новгород': ['новгород'],
+        'йошкар-ола': ['йошкар ола'],
+        'орел': ['орёл']
+    };
+
+    const canonical = normalizeCityKey(canonicalCity);
+    const aliases = aliasMap[canonical] || [];
+    const all = new Set([canonical, ...aliases.map(normalizeCityKey)]);
+
+    // Поддерживаем вариант "Город доставки" в базе
+    Array.from(all).forEach(name => all.add(`${name} доставки`));
+    return all;
+}
+
+function rowMatchesCity(rowCityName, canonicalCity) {
+    const row = normalizeCityKey(rowCityName);
+    const aliases = getCanonicalAliases(canonicalCity);
+    return aliases.has(row);
+}
+
 function initSupabase(url, serviceRoleKey) {
     if (!url || !serviceRoleKey) {
         throw new Error('Supabase URL и Service Role Key обязательны!');
@@ -31,18 +74,22 @@ async function updateDeliveryDates(deliveryData) {
 
     const results = { success: [], failed: [], total: deliveryData.length };
 
+    // Читаем справочник городов из БД один раз, чтобы обновлять ВСЕ совпадающие строки
+    const { data: allRows, error: allRowsError } = await supabaseClient
+        .from('delivery_dates')
+        .select('id, city_name');
+
+    if (allRowsError) {
+        throw new Error(`Не удалось загрузить список городов: ${allRowsError.message}`);
+    }
+
     for (const item of deliveryData) {
         try {
             console.log(`💾 ${item.city}: доставка ${item.date}, сборка ${item.assembly_date || '—'}, кроме ${item.restrictions || '—'}`);
 
-            // Парсер передал каноническое имя — ищем (ilike для устойчивости к регистру)
-            const { data: rows } = await supabaseClient
-                .from('delivery_dates')
-                .select('id, city_name')
-                .ilike('city_name', item.city)
-                .limit(1);
-            const row = rows?.[0];
-            if (!row) {
+            // Важно: обновляем все строки, относящиеся к одному городу (каноническая + алиасы)
+            const matchedRows = (allRows || []).filter(row => rowMatchesCity(row.city_name, item.city));
+            if (matchedRows.length === 0) {
                 results.failed.push({ city: item.city, error: 'Город не найден. Выполните sql/FIX_DELIVERY_DATES_CLEANUP.sql в Supabase.' });
                 continue;
             }
@@ -50,27 +97,34 @@ async function updateDeliveryDates(deliveryData) {
             const assemblyVal = (item.assembly_date && String(item.assembly_date).trim()) || null;
             const restrictionsVal = (item.restrictions && String(item.restrictions).trim()) || null;
 
-            let error = null;
-            const rpcResult = await supabaseClient.rpc('update_delivery_dates_row', {
-                p_id: row.id,
-                p_delivery_date: item.date,
-                p_assembly_date: assemblyVal,
-                p_restrictions: restrictionsVal
-            });
-            error = rpcResult.error;
-            if (error && error.code === '42883') {
-                // RPC не существует — fallback на обычный update
-                const upd = await supabaseClient.from('delivery_dates').update({
-                    delivery_date: item.date,
-                    assembly_date: assemblyVal,
-                    restrictions: restrictionsVal,
-                    updated_at: new Date().toISOString()
-                }).eq('id', row.id);
-                error = upd.error;
+            let updateError = null;
+            for (const row of matchedRows) {
+                const rpcResult = await supabaseClient.rpc('update_delivery_dates_row', {
+                    p_id: row.id,
+                    p_delivery_date: item.date,
+                    p_assembly_date: assemblyVal,
+                    p_restrictions: restrictionsVal
+                });
+                let error = rpcResult.error;
+                if (error && error.code === '42883') {
+                    // RPC не существует — fallback на обычный update
+                    const upd = await supabaseClient.from('delivery_dates').update({
+                        delivery_date: item.date,
+                        assembly_date: assemblyVal,
+                        restrictions: restrictionsVal,
+                        updated_at: new Date().toISOString()
+                    }).eq('id', row.id);
+                    error = upd.error;
+                }
+
+                if (error) {
+                    updateError = error;
+                    break;
+                }
             }
 
-            if (error) {
-                results.failed.push({ city: item.city, error: error.message });
+            if (updateError) {
+                results.failed.push({ city: item.city, error: updateError.message });
                 continue;
             }
 
@@ -79,7 +133,8 @@ async function updateDeliveryDates(deliveryData) {
                 action: 'updated',
                 date: item.date,
                 assembly_date: assemblyVal,
-                restrictions: restrictionsVal
+                restrictions: restrictionsVal,
+                updated_rows: matchedRows.length
             });
         } catch (err) {
             results.failed.push({ city: item.city, error: err.message });

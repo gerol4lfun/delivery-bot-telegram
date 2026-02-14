@@ -1,7 +1,7 @@
 {
   "name": "delivery-dates-telegram-bot",
   "version": "1.0.0",
-  "description": "Telegram bot for updating delivery dates in Supabase",
+  "description": "Telegram bot for updating delivery dates in Supabase. Railway Project: Telegram Bot - Delivery Dates",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
