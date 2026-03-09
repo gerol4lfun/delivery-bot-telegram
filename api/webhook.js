@@ -45,6 +45,8 @@ module.exports = async function handler(req, res) {
             }
         }
         getBot().processUpdate(update);
+        // Даём время асинхронным ответам бота уйти до завершения функции (Vercel serverless)
+        await new Promise((r) => setTimeout(r, 4000));
         res.status(200).end();
     } catch (err) {
         console.error('Webhook error:', err);

@@ -23,10 +23,9 @@ module.exports = async function handler(req, res) {
         res.status(500).send('TELEGRAM_BOT_TOKEN not set');
         return;
     }
-    // Vercel даёт URL вида https://project-xxx.vercel.app
-    const base = process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : process.env.WEBHOOK_BASE_URL;
+    // Лучше использовать основной домен (WEBHOOK_BASE_URL), чтобы вебхук не привязывался к одному деплою
+    const base = process.env.WEBHOOK_BASE_URL
+        || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
     if (!base) {
         res.status(500).send('VERCEL_URL or WEBHOOK_BASE_URL not set');
         return;
