@@ -1,0 +1,11 @@
+# Секреты — никогда не коммитить
+.env
+.env.local
+.env.*.local
+
+# Зависимости
+node_modules/
+
+# Логи и ОС
+*.log
+.DS_Store
